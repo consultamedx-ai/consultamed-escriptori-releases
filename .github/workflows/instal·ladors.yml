@@ -95,7 +95,7 @@ jobs:
           releaseBody: 'Instal·ladors de ConsultaMed Escriptori. Windows: ConsultaMed-Windows.exe (avis SmartScreen: «Más información → Ejecutar de todas formas»). macOS: .dmg (Gatekeeper: clic dret → Abrir).'
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
       - name: Copia amb nom estable (per a la pagina de descarrega)
         shell: bash
