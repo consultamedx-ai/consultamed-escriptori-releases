@@ -1,0 +1,107 @@
+# Aquest fitxer viu al repo PUBLIC consultamedx-ai/consultamed-escriptori-releases
+# (.github/workflows/instal·ladors.yml). Aqui, al repo de l'app, n'hi ha la copia mestra.
+#
+# Construeix els instal·ladors d'una versio del programa (etiqueta v* del repo privat de l'app):
+# Windows (NSIS .exe amb el WebView2 inclos) i macOS (.dmg per a Apple Silicon i per a Intel),
+# i deixa un ESBORRANY de Release en aquest mateix repo, amb el latest.json de l'updater i una
+# copia de cada instal·lador amb nom estable per a la pagina de descarrega. Sense signatura de
+# codi (decisio del CEO): SmartScreen i Gatekeeper avisaran.
+#
+# Es llança a ma: Actions → instal·ladors → Run workflow → versio (p. ex. v0.0.1).
+# Secrets d'aquest repo (els posa la configuracio de STOP-2, sense cap token personal):
+#   APP_DEPLOY_KEY             deploy key de lectura del repo privat consultamedx-ai/consultamed-escriptori
+#   WEB_DEPLOY_KEY             deploy key de lectura del repo privat consultamedx-ai/landing-facturamed
+#   TAURI_SIGNING_PRIVATE_KEY  clau privada del updater (minisign), MAI al codi ni als registres
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  la seva contrasenya (la posa en Roger amb «Posa la contrasenya de la clau.command»)
+name: instal·ladors
+
+on:
+  workflow_dispatch:
+    inputs:
+      versio:
+        description: 'Etiqueta de la versio al repo de l''app (p. ex. v0.0.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  construir:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+            nom: ConsultaMed-Windows.exe
+            patro: 'app/src-tauri/target/release/bundle/nsis/*-setup.exe'
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            nom: ConsultaMed-macOS-AppleSilicon.dmg
+            patro: 'app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            nom: ConsultaMed-macOS-Intel.dmg
+            patro: 'app/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Codi de l'app (repo privat, a l'etiqueta demanada)
+        uses: actions/checkout@v4
+        with:
+          repository: consultamedx-ai/consultamed-escriptori
+          ssh-key: ${{ secrets.APP_DEPLOY_KEY }}
+          ref: ${{ inputs.versio }}
+          path: app
+      - name: Pagines de la web (repo privat, pinnades a PAGINES.lock)
+        uses: actions/checkout@v4
+        with:
+          repository: consultamedx-ai/landing-facturamed
+          ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
+          path: web
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - name: Dependencies i paquet de pagines
+        working-directory: app
+        env:
+          CM_WEB_CLON: ${{ github.workspace }}/web
+        run: |
+          npm ci
+          npm run prova:empaqueta
+          npm run empaqueta
+      - name: Rust (proves)
+        working-directory: app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Construir i deixar l'esborrany de Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CM_WEB_CLON: ${{ github.workspace }}/web
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tagName: ${{ inputs.versio }}
+          releaseName: 'ConsultaMed ${{ inputs.versio }}'
+          releaseBody: 'Instal·ladors de ConsultaMed Escriptori. Windows: ConsultaMed-Windows.exe (avis SmartScreen: «Más información → Ejecutar de todas formas»). macOS: .dmg (Gatekeeper: clic dret → Abrir).'
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          args: ${{ matrix.args }}
+      - name: Copia amb nom estable (per a la pagina de descarrega)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          f=$(ls ${{ matrix.patro }} | head -1)
+          cp "$f" "${{ matrix.nom }}"
+          gh release upload "${{ inputs.versio }}" "${{ matrix.nom }}" --clobber --repo "${{ github.repository }}"
