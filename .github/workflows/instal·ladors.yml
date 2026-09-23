@@ -51,6 +51,9 @@ jobs:
             nom: macos-x86_64
     runs-on: ${{ matrix.platform }}
     steps:
+      - name: Cap conversio de finals de linia (a Windows, git posaria CRLF i les comprovacions byte a byte fallarien)
+        shell: bash
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Codi de l'app (repo privat, a l'etiqueta demanada)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
