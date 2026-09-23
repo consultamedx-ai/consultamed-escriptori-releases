@@ -3,28 +3,36 @@
 #
 # Construeix els instal·ladors d'una versio del programa (etiqueta v* del repo privat de l'app):
 # Windows (NSIS .exe amb el WebView2 inclos) i macOS (.dmg per a Apple Silicon i per a Intel),
-# i deixa un ESBORRANY de Release en aquest mateix repo, amb el latest.json de l'updater i una
-# copia de cada instal·lador amb nom estable per a la pagina de descarrega. Sense signatura de
+# els FIRMA per a l'actualitzador i deixa un ESBORRANY de Release en aquest mateix repo, amb el
+# latest.json de l'updater i els noms estables per a la pagina de descarrega. Sense signatura de
 # codi (decisio del CEO): SmartScreen i Gatekeeper avisaran.
 #
-# Es llança a ma: Actions → instal·ladors → Run workflow → versio (p. ex. v0.0.1).
-# Secrets d'aquest repo (els posa la configuracio de STOP-2, sense cap token personal):
-#   APP_DEPLOY_KEY             deploy key de lectura del repo privat consultamedx-ai/consultamed-escriptori
-#   WEB_DEPLOY_KEY             deploy key de lectura del repo privat consultamedx-ai/landing-facturamed
-#   TAURI_SIGNING_PRIVATE_KEY  clau privada del updater (minisign), MAI al codi ni als registres
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  la seva contrasenya (la posa en Roger amb «Posa la contrasenya de la clau.command»)
+# Des del 23/09/2026 (ENG-31 S, P-ENG-56) la clau de firma NO es a l'abast de la construccio:
+#   1. «construir» compila SENSE cap secret de firma (npm, cargo i tots els build.rs corren sense la clau);
+#   2. «firmar-i-publicar» corre a l'entorn «firma» de GitHub, que demana l'APROVACIO d'en Roger; els
+#      dos secrets de la clau nomes viuen en aquest entorn (els hi posa «Protegeix la clau de firma.command»)
+#      i nomes s'exposen al pas que firma. Els «actions» van fixats per SHA de commit.
+#
+# Es llança a ma: Actions → instal·ladors → Run workflow → versio (p. ex. v0.0.3). Quan la construccio
+# acaba, GitHub avisa en Roger perque aprovi la firma (Review deployments → firma → Approve).
+# Secrets d'aquest repo (STOP-2, sense cap token personal):
+#   APP_DEPLOY_KEY   deploy key de lectura del repo privat consultamedx-ai/consultamed-escriptori
+#   WEB_DEPLOY_KEY   deploy key de lectura del repo privat consultamedx-ai/landing-facturamed
+# Secrets de l'ENTORN «firma»:
+#   TAURI_SIGNING_PRIVATE_KEY           clau privada del updater (minisign), MAI al codi ni als registres
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  la seva contrasenya
 name: instal·ladors
 
 on:
   workflow_dispatch:
     inputs:
       versio:
-        description: 'Etiqueta de la versio al repo de l''app (p. ex. v0.0.1)'
+        description: 'Etiqueta de la versio al repo de l''app (p. ex. v0.0.3)'
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   construir:
@@ -34,43 +42,41 @@ jobs:
         include:
           - platform: windows-latest
             args: ''
-            nom: ConsultaMed-Windows.exe
-            patro: 'app/src-tauri/target/release/bundle/nsis/*-setup.exe'
+            nom: windows
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
-            nom: ConsultaMed-macOS-AppleSilicon.dmg
-            patro: 'app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg'
+            nom: macos-aarch64
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
-            nom: ConsultaMed-macOS-Intel.dmg
-            patro: 'app/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg'
+            nom: macos-x86_64
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Codi de l'app (repo privat, a l'etiqueta demanada)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: consultamedx-ai/consultamed-escriptori
           ssh-key: ${{ secrets.APP_DEPLOY_KEY }}
           ref: ${{ inputs.versio }}
           path: app
       - name: Pagines de la web (repo privat, pinnades a PAGINES.lock)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: consultamedx-ai/landing-facturamed
           ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
           path: web
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, llegit el 23/09/2026
         with:
+          toolchain: stable
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app/src-tauri
-      - name: Dependencies i paquet de pagines
+      - name: Dependencies, paquet de pagines i proves
         working-directory: app
         env:
           CM_WEB_CLON: ${{ github.workspace }}/web
@@ -78,30 +84,102 @@ jobs:
           npm ci
           npm run prova:empaqueta
           npm run empaqueta
+          npm run prova:llicencies
       - name: Rust (proves)
         working-directory: app
         run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Construir i deixar l'esborrany de Release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CM_WEB_CLON: ${{ github.workspace }}/web
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
-          tagName: ${{ inputs.versio }}
-          releaseName: 'ConsultaMed ${{ inputs.versio }}'
-          releaseBody: 'Instal·ladors de ConsultaMed Escriptori. Windows: ConsultaMed-Windows.exe (avis SmartScreen: «Más información → Ejecutar de todas formas»). macOS: .dmg (Gatekeeper: clic dret → Abrir).'
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          args: ${{ matrix.args }}
-      - name: Copia amb nom estable (per a la pagina de descarrega)
+      - name: Construir SENSE la clau de firma (els artefactes del updater es firmen al pas seguent)
+        working-directory: app
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CM_WEB_CLON: ${{ github.workspace }}/web
+        run: npm run tauri -- build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Artefactes amb nom estable
+        working-directory: app/src-tauri
+        shell: bash
         run: |
-          f=$(ls ${{ matrix.patro }} | head -1)
-          cp "$f" "${{ matrix.nom }}"
-          gh release upload "${{ inputs.versio }}" "${{ matrix.nom }}" --clobber --repo "${{ github.repository }}"
+          S="$GITHUB_WORKSPACE/sortida"; mkdir -p "$S"
+          case "${{ matrix.nom }}" in
+            windows)
+              cp target/release/bundle/nsis/*-setup.exe "$S/ConsultaMed-Windows.exe" ;;
+            macos-aarch64)
+              cp target/aarch64-apple-darwin/release/bundle/dmg/*.dmg "$S/ConsultaMed-macOS-AppleSilicon.dmg"
+              tar -czf "$S/ConsultaMed_aarch64.app.tar.gz" -C target/aarch64-apple-darwin/release/bundle/macos ConsultaMed.app ;;
+            macos-x86_64)
+              cp target/x86_64-apple-darwin/release/bundle/dmg/*.dmg "$S/ConsultaMed-macOS-Intel.dmg"
+              tar -czf "$S/ConsultaMed_x64.app.tar.gz" -C target/x86_64-apple-darwin/release/bundle/macos ConsultaMed.app ;;
+          esac
+          ls -la "$S"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.nom }}
+          path: sortida/
+          if-no-files-found: error
+          retention-days: 3
+
+  firmar-i-publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    # L'entorn «firma» demana l'aprovacio d'en Roger i es l'UNIC lloc on viuen els secrets de la clau.
+    environment: firma
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: sortida
+          merge-multiple: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: CLI de Tauri (per firmar)
+        run: npm i -g @tauri-apps/cli@2.11.4
+      - name: Firmar els artefactes del updater (la clau NOMES en aquest pas)
+        working-directory: sortida
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "✗ No hi ha la clau de firma a l'entorn «firma» (Protegeix la clau de firma.command)"; exit 1; }
+          for f in ConsultaMed-Windows.exe ConsultaMed_aarch64.app.tar.gz ConsultaMed_x64.app.tar.gz; do
+            [ -f "$f" ] || { echo "✗ falta $f"; exit 1; }
+            tauri signer sign "$f"
+            [ -s "$f.sig" ] || { echo "✗ sense firma per a $f"; exit 1; }
+          done
+          ls -la
+      - name: latest.json (totes les URL https i d'aquest repo)
+        env:
+          VERSIO: ${{ inputs.versio }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat > genera-latest.cjs <<'JS'
+          const fs = require('fs');
+          const versio = process.env.VERSIO.replace(/^v/, '');
+          const base = 'https://github.com/' + process.env.REPO + '/releases/download/' + process.env.VERSIO + '/';
+          const e = (f) => ({ url: base + f, signature: fs.readFileSync('sortida/' + f + '.sig', 'utf8').trim() });
+          const platforms = {
+            'darwin-aarch64': e('ConsultaMed_aarch64.app.tar.gz'), 'darwin-aarch64-app': e('ConsultaMed_aarch64.app.tar.gz'),
+            'darwin-x86_64': e('ConsultaMed_x64.app.tar.gz'), 'darwin-x86_64-app': e('ConsultaMed_x64.app.tar.gz'),
+            'windows-x86_64': e('ConsultaMed-Windows.exe'), 'windows-x86_64-nsis': e('ConsultaMed-Windows.exe'),
+          };
+          for (const [k, p] of Object.entries(platforms)) {
+            if (!/^https:\/\/github\.com\/consultamedx-ai\/[^/]+\/releases\/download\//.test(p.url)) { console.error('✗ URL no https o d\'un altre lloc: ' + k + ' ' + p.url); process.exit(1); }
+            if (!/^[A-Za-z0-9+/=\s]+$/.test(p.signature) || p.signature.length < 100) { console.error('✗ firma estranya: ' + k); process.exit(1); }
+          }
+          fs.writeFileSync('sortida/latest.json', JSON.stringify({ version: versio, notes: 'Instal·ladors de ConsultaMed Escriptori. Windows: ConsultaMed-Windows.exe (avis SmartScreen: «Más información → Ejecutar de todas formas»). macOS: .dmg (Gatekeeper: clic dret → Abrir).', pub_date: new Date().toISOString(), platforms }, null, 2) + '\n');
+          console.log(fs.readFileSync('sortida/latest.json', 'utf8').replace(/"signature": "[^"]{20}[^"]*"/g, '"signature": "…"'));
+          JS
+          node genera-latest.cjs
+      - name: Esborrany de Release (mai es publica des d'aqui)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSIO: ${{ inputs.versio }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$VERSIO" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$VERSIO" sortida/* --clobber -R "$REPO"
+          else
+            gh release create "$VERSIO" sortida/* --draft --title "ConsultaMed $VERSIO" -R "$REPO" \
+              --notes "Instal·ladors de ConsultaMed Escriptori. Windows: ConsultaMed-Windows.exe (avis SmartScreen: «Más información → Ejecutar de todas formas»). macOS: .dmg (Gatekeeper: clic dret → Abrir). Avisos de llicencies de tercers: dins del programa (Ayuda → Avisos de licencias de terceros)."
+          fi
+          gh release view "$VERSIO" -R "$REPO" --json isDraft,assets --jq '"esborrany: " + (.isDraft|tostring) + " · " + ([.assets[].name] | join(", "))'
