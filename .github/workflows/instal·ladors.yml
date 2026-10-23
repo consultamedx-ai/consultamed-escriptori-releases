@@ -11,7 +11,14 @@
 #   1. «construir» compila SENSE cap secret de firma (npm, cargo i tots els build.rs corren sense la clau);
 #   2. «firmar-i-publicar» corre a l'entorn «firma» de GitHub, que demana l'APROVACIO d'en Roger; els
 #      dos secrets de la clau nomes viuen en aquest entorn (els hi posa «Protegeix la clau de firma.command»)
-#      i nomes s'exposen al pas que firma. Els «actions» van fixats per SHA de commit.
+#      i nomes s'exposen al pas que firma. Els «actions» van fixats per SHA de commit; des del 22/10/2026
+#      (ENG-36 ④), a versions que corren amb Node 24.
+#   3. (ENG-36 ③) Si la Release d'aquella versio JA ES PUBLICADA, el flux s'atura i no hi toca res: nomes
+#      s'actualitza un ESBORRANY (per a una versio publicada, una etiqueta nova: v0.0.5…).
+#   4. (22/10/2026) Una sola execucio alhora per versio (la segona espera que la primera acabi: mai un esborrany
+#      amb fitxers de dues construccions barrejats, que faria que el latest.json no casés amb l'instal·lador); el
+#      codi de l'app es el de l'ETIQUETA (refs/tags/…); cap checkout deixa la clau de desplegament als passos
+#      seguents (persist-credentials: false); els artefactes es guarden 14 dies (temps per aprovar la firma).
 #
 # Es llança a ma: Actions → instal·ladors → Run workflow → versio (p. ex. v0.0.3). Quan la construccio
 # acaba, GitHub avisa en Roger perque aprovi la firma (Review deployments → firma → Approve).
@@ -22,6 +29,7 @@
 #   TAURI_SIGNING_PRIVATE_KEY           clau privada del updater (minisign), MAI al codi ni als registres
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  la seva contrasenya
 name: instal·ladors
+run-name: instal·ladors ${{ inputs.versio }}
 
 on:
   workflow_dispatch:
@@ -33,6 +41,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: installadors-${{ inputs.versio }}
+  cancel-in-progress: false
 
 jobs:
   construir:
@@ -54,29 +66,33 @@ jobs:
       - name: Cap conversio de finals de linia (a Windows, git posaria CRLF i les comprovacions byte a byte fallarien)
         shell: bash
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
       - name: Codi de l'app (repo privat, a l'etiqueta demanada)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
         with:
           repository: consultamedx-ai/consultamed-escriptori
           ssh-key: ${{ secrets.APP_DEPLOY_KEY }}
-          ref: ${{ inputs.versio }}
+          ref: refs/tags/${{ inputs.versio }}
           path: app
+          persist-credentials: false
       - name: Pagines de la web (repo privat, pinnades a PAGINES.lock)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
         with:
           repository: consultamedx-ai/landing-facturamed
           ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
           path: web
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0 (Node 24)
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, llegit el 23/09/2026
         with:
           toolchain: stable
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (ja Node 24)
         with:
           workspaces: app/src-tauri
       - name: Dependencies, paquet de pagines i proves
@@ -113,12 +129,12 @@ jobs:
               tar -czf "$S/ConsultaMed_x64.app.tar.gz" -C target/x86_64-apple-darwin/release/bundle/macos ConsultaMed.app ;;
           esac
           ls -la "$S"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0 (Node 24)
         with:
           name: ${{ matrix.nom }}
           path: sortida/
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 14
 
   firmar-i-publicar:
     needs: construir
@@ -128,11 +144,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24)
         with:
           path: sortida
           merge-multiple: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0 (Node 24)
         with:
           node-version: 22
       - name: CLI de Tauri (per firmar)
@@ -180,6 +196,12 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           if gh release view "$VERSIO" -R "$REPO" >/dev/null 2>&1; then
+            # ENG-36 ③: nomes es reemplacen els fitxers d'un ESBORRANY; una Release publicada no es toca mai
+            ESBORRANY="$(gh release view "$VERSIO" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null)"
+            if [ "$ESBORRANY" != "true" ]; then
+              echo "✗ La Release $VERSIO ja es PUBLICADA (o no se n'ha pogut llegir l'estat): no es toca cap fitxer. Per a una versio nova, una etiqueta nova."
+              exit 1
+            fi
             gh release upload "$VERSIO" sortida/* --clobber -R "$REPO"
           else
             gh release create "$VERSIO" sortida/* --draft --title "ConsultaMed $VERSIO" -R "$REPO" \
